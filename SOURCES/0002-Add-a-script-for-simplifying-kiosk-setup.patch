@@ -1,0 +1,309 @@
+From db768718666563f5ad9658ba4cc07987122b4e89 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Mon, 9 Aug 2021 10:30:36 -0400
+Subject: [PATCH 2/2] Add a script for simplifying kiosk setup
+
+This commit adds a new session "Kiosk Script Session" to the login
+screen that starts a shell script that starts a gedit window that opens
+the shell script.
+
+It should make it easy to customize the session to use a bespoke
+application from within the session itself.
+---
+ .../org.gnome.Kiosk.Script.desktop.in.in      |  4 ++
+ kiosk-script/gnome-kiosk-script               | 23 +++++++
+ .../gnome-session/gnome-kiosk-script.session  |  3 +
+ .../systemd/org.gnome.Kiosk.Script.service.in |  8 +++
+ kiosk-script/systemd/session.conf             |  3 +
+ .../gnome-kiosk-script-wayland.desktop.in     |  9 +++
+ .../gnome-kiosk-script-xorg.desktop.in        |  9 +++
+ meson.build                                   | 61 ++++++++++++++++++-
+ 8 files changed, 118 insertions(+), 2 deletions(-)
+ create mode 100644 kiosk-script/desktop/org.gnome.Kiosk.Script.desktop.in.in
+ create mode 100755 kiosk-script/gnome-kiosk-script
+ create mode 100644 kiosk-script/gnome-session/gnome-kiosk-script.session
+ create mode 100644 kiosk-script/systemd/org.gnome.Kiosk.Script.service.in
+ create mode 100644 kiosk-script/systemd/session.conf
+ create mode 100644 kiosk-script/wayland-sessions/gnome-kiosk-script-wayland.desktop.in
+ create mode 100644 kiosk-script/xsessions/gnome-kiosk-script-xorg.desktop.in
+
+diff --git a/kiosk-script/desktop/org.gnome.Kiosk.Script.desktop.in.in b/kiosk-script/desktop/org.gnome.Kiosk.Script.desktop.in.in
+new file mode 100644
+index 0000000..dd562b2
+--- /dev/null
++++ b/kiosk-script/desktop/org.gnome.Kiosk.Script.desktop.in.in
+@@ -0,0 +1,4 @@
++[Desktop Entry]
++Name=Kiosk Script
++Type=Application
++Exec=gnome-kiosk-script
+diff --git a/kiosk-script/gnome-kiosk-script b/kiosk-script/gnome-kiosk-script
+new file mode 100755
+index 0000000..b595cd8
+--- /dev/null
++++ b/kiosk-script/gnome-kiosk-script
+@@ -0,0 +1,23 @@
++#!/usr/bin/sh
++
++if [ ! -e ~/.local/bin/gnome-kiosk-script ]; then
++    mkdir -p ~/.local/bin ~/.config
++    cat > ~/.local/bin/gnome-kiosk-script <<- "EOF"
++	#!/bin/sh
++	# This script is located in ~/.local/bin.
++	# It's provided as an example script to show how
++	# the kiosk session works.  At the moment, the script
++	# just starts a text editor open to itself, but it
++	# should get customized to instead start a full screen
++	# application designed for the kiosk deployment.
++	gedit ~/.local/bin/gnome-kiosk-script
++
++	sleep 1.0
++	exec "$0" "$@"
++EOF
++
++    chmod +x ~/.local/bin/gnome-kiosk-script
++    touch ~/.config/gnome-initial-setup-done
++fi
++
++exec ~/.local/bin/gnome-kiosk-script "$@"
+diff --git a/kiosk-script/gnome-session/gnome-kiosk-script.session b/kiosk-script/gnome-session/gnome-kiosk-script.session
+new file mode 100644
+index 0000000..3b2cc7b
+--- /dev/null
++++ b/kiosk-script/gnome-session/gnome-kiosk-script.session
+@@ -0,0 +1,3 @@
++[GNOME Session]
++Name=Kiosk
++RequiredComponents=org.gnome.Kiosk;org.gnome.Kiosk.Script;
+diff --git a/kiosk-script/systemd/org.gnome.Kiosk.Script.service.in b/kiosk-script/systemd/org.gnome.Kiosk.Script.service.in
+new file mode 100644
+index 0000000..8194f1c
+--- /dev/null
++++ b/kiosk-script/systemd/org.gnome.Kiosk.Script.service.in
+@@ -0,0 +1,8 @@
++[Unit]
++Description=Kiosk script
++BindsTo=gnome-session.target
++After=gnome-session.target
++
++[Service]
++ExecStart=@bindir@/gnome-kiosk-script
++Restart=always
+diff --git a/kiosk-script/systemd/session.conf b/kiosk-script/systemd/session.conf
+new file mode 100644
+index 0000000..a948efb
+--- /dev/null
++++ b/kiosk-script/systemd/session.conf
+@@ -0,0 +1,3 @@
++[Unit]
++Requires=org.gnome.Kiosk.target
++Requires=org.gnome.Kiosk.Script.service
+diff --git a/kiosk-script/wayland-sessions/gnome-kiosk-script-wayland.desktop.in b/kiosk-script/wayland-sessions/gnome-kiosk-script-wayland.desktop.in
+new file mode 100644
+index 0000000..05e8dea
+--- /dev/null
++++ b/kiosk-script/wayland-sessions/gnome-kiosk-script-wayland.desktop.in
+@@ -0,0 +1,9 @@
++[Desktop Entry]
++Name=Kiosk Script Session (Wayland Display Server)
++Comment=This session logs you into the sessoin started by ~/.local/bin/gnome-kiosk-script
++Exec=gnome-session --session gnome-kiosk-script
++TryExec=gnome-session
++Type=Application
++DesktopNames=GNOME-Kiosk;GNOME;
++X-GDM-SessionRegisters=true
++
+diff --git a/kiosk-script/xsessions/gnome-kiosk-script-xorg.desktop.in b/kiosk-script/xsessions/gnome-kiosk-script-xorg.desktop.in
+new file mode 100644
+index 0000000..11dc0cf
+--- /dev/null
++++ b/kiosk-script/xsessions/gnome-kiosk-script-xorg.desktop.in
+@@ -0,0 +1,9 @@
++[Desktop Entry]
++Name=Kiosk Script Session (X11 Display Server)
++Comment=This session logs you into the sessoin started by ~/.local/bin/gnome-kiosk-script
++Exec=gnome-session --session gnome-kiosk-script
++TryExec=gnome-session
++Type=Application
++DesktopNames=GNOME-Kiosk;GNOME;
++X-GDM-SessionRegisters=true
++
+diff --git a/meson.build b/meson.build
+index c2988ad..1f5a756 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1,49 +1,50 @@
+ project('gnome-kiosk', 'c',
+         version: '40.0'
+ )
+ add_project_arguments('-D_GNU_SOURCE',
+                       language: 'c'
+ )
+ 
+ c_compiler = meson.get_compiler('c')
+ 
+ gnome = import('gnome')
+ i18n = import('i18n')
+ 
+ prefix = get_option('prefix')
+ datadir = join_paths(prefix, get_option('datadir'))
+ bindir = join_paths(prefix, get_option('bindir'))
+ localedir = join_paths(datadir, 'locale')
+ desktop_data_dir = join_paths(datadir, 'applications')
+ session_dir = join_paths(datadir, 'gnome-session', 'sessions')
+ xsessions_dir = join_paths(datadir, 'xsessions')
++wayland_sessions_dir = join_paths(datadir, 'wayland-sessions')
+ 
+ po_dir = join_paths(meson.current_source_dir(), 'po')
+ 
+ config_data = configuration_data()
+ config_data.set_quoted('GETTEXT_PACKAGE', meson.project_name())
+ config_data.set_quoted('VERSION', meson.project_version())
+ config_data.set_quoted('LOCALEDIR', localedir)
+ 
+ config_h = configure_file(
+         input: 'config.h.meson',
+         output: 'config.h',
+         configuration: config_data
+ )
+ 
+ meson.add_install_script ('meson/postinstall.py')
+ 
+ mutter_dependency = dependency('libmutter-8')
+ mutter_libdir = mutter_dependency.get_pkgconfig_variable('typelibdir')
+ 
+ systemd_user_unit_dir = dependency('systemd').get_pkgconfig_variable('systemduserunitdir',
+                                                                      define_variable: ['prefix', prefix])
+ systemd_dependency = dependency('libsystemd')
+ 
+ dbus_proxies = []
+ dbus_proxies += {
+         'prefix':   'org.gnome.DisplayManager',
+         'namespace': 'Gdm',
+         'interface': 'Manager',
+ }
+ 
+@@ -139,62 +140,118 @@ desktop_file = configure_file(
+         input: 'compositor/data/org.gnome.Kiosk.desktop.in.in',
+         output: 'org.gnome.Kiosk.desktop.in',
+         configuration: desktop_config_data
+ )
+ 
+ i18n.merge_file('desktop',
+         input: desktop_file,
+         output: 'org.gnome.Kiosk.desktop',
+         po_dir: po_dir,
+         install: true,
+         install_dir: desktop_data_dir,
+         type: 'desktop'
+ )
+ 
+ systemd_service_config_data = configuration_data()
+ systemd_service_config_data.set('bindir', bindir)
+ 
+ systemd_service_files = []
+ systemd_service_files += 'compositor/data/systemd/org.gnome.Kiosk@wayland.service.in'
+ systemd_service_files += 'compositor/data/systemd/org.gnome.Kiosk@x11.service.in'
+ 
+ foreach service_file : systemd_service_files
+         configure_file(
+                 input: service_file,
+                 output: '@BASENAME@',
+                 configuration: systemd_service_config_data,
+                 install_dir: systemd_user_unit_dir
+         )
+ endforeach
+ 
+-install_data('compositor/data/systemd/org.gnome.Kiosk.target',
+-             install_dir: systemd_user_unit_dir)
++install_data(
++        'compositor/data/systemd/org.gnome.Kiosk.target',
++        install_dir: systemd_user_unit_dir
++)
++
++install_data('kiosk-script/gnome-kiosk-script',
++        install_dir: bindir,
++	install_mode: 'rwxr-xr-x'
++)
++
++desktop_file = configure_file(
++        input: 'kiosk-script/desktop/org.gnome.Kiosk.Script.desktop.in.in',
++        output: 'org.gnome.Kiosk.Script.desktop.in',
++        configuration: desktop_config_data
++)
++
++i18n.merge_file('desktop',
++        input: desktop_file,
++        output: 'org.gnome.Kiosk.Script.desktop',
++        po_dir: po_dir,
++        install: true,
++        install_dir: desktop_data_dir,
++        type: 'desktop'
++)
++
++configure_file(
++       input: 'kiosk-script/systemd/org.gnome.Kiosk.Script.service.in',
++       output: '@BASENAME@',
++       configuration: systemd_service_config_data,
++       install_dir: systemd_user_unit_dir
++)
++
++kiosk_script_systemd_target_dir = join_paths(systemd_user_unit_dir, 'gnome-session@gnome-kiosk-script.target.d')
++install_data('kiosk-script/systemd/session.conf',
++        install_dir: kiosk_script_systemd_target_dir
++)
++
++install_data('kiosk-script/gnome-session/gnome-kiosk-script.session',
++        install_dir: session_dir,
++)
++
++i18n.merge_file('desktop',
++        input: 'kiosk-script/xsessions/gnome-kiosk-script-xorg.desktop.in',
++        output: '@BASENAME@',
++        po_dir: po_dir,
++        install: true,
++        install_dir: xsessions_dir,
++        type: 'desktop'
++)
++
++i18n.merge_file('desktop',
++        input: 'kiosk-script/wayland-sessions/gnome-kiosk-script-wayland.desktop.in',
++        output: '@BASENAME@',
++        po_dir: po_dir,
++        install: true,
++        install_dir: wayland_sessions_dir,
++        type: 'desktop'
++)
+ 
+ session_config_data = configuration_data()
+ session_config_data.set('required_components', 'org.gnome.Kiosk;org.gnome.Kiosk.SearchApp;')
+ 
+ session_file = configure_file(
+         input: 'search-app/org.gnome.Kiosk.SearchApp.session.desktop.in.in',
+         output: 'org.gnome.Kiosk.SearchApp.session.desktop.in',
+         configuration: session_config_data
+ )
+ 
+ subdir('input-selector')
+ 
+ i18n.merge_file('desktop',
+         input: session_file,
+         output: 'org.gnome.Kiosk.SearchApp.session',
+         po_dir: po_dir,
+         install: true,
+         install_dir: session_dir,
+         type: 'desktop'
+ )
+ 
+ i18n.merge_file('desktop',
+         input: 'search-app/org.gnome.Kiosk.SearchApp.Session.desktop.in',
+         output: 'org.gnome.Kiosk.SearchApp.Session.desktop',
+         po_dir: po_dir,
+         install: true,
+         install_dir: xsessions_dir,
+         type: 'desktop'
+ )
+ 
+-- 
+2.31.1
+

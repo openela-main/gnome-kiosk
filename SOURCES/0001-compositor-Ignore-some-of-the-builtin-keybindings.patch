@@ -1,0 +1,239 @@
+From 28a560fdc1a8571d0e1d34da5cb57f43d2fe1a54 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Wed, 11 Aug 2021 14:47:05 -0400
+Subject: [PATCH 1/6] compositor: Ignore some of the builtin keybindings
+
+Mutter on wayland currently has a bug where it crashes if the run dialog
+keybinding is pressed. No one notices the bug for gnome-shell, since
+gnome-shell overrides mutters run dialog keybinding.
+
+This commit makes GNOME Kiosk also override the keybinding to avoid the
+crash. At the same time it neuters a few other builtin keybindings that
+aren't so useful to GNOME Kiosk.
+---
+ compositor/kiosk-compositor.c | 90 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 90 insertions(+)
+
+diff --git a/compositor/kiosk-compositor.c b/compositor/kiosk-compositor.c
+index 43329c7..2db58ed 100644
+--- a/compositor/kiosk-compositor.c
++++ b/compositor/kiosk-compositor.c
+@@ -1,42 +1,43 @@
+ #include "config.h"
+ #include "kiosk-compositor.h"
+ 
+ #include <stdlib.h>
+ #include <string.h>
+ 
+ #include <glib-object.h>
+ 
+ #include <clutter/clutter.h>
+ #include <clutter/x11/clutter-x11.h>
+ #include <meta/common.h>
+ #include <meta/display.h>
++#include <meta/keybindings.h>
+ #include <meta/main.h>
+ #include <meta/util.h>
+ #include <meta/meta-window-group.h>
+ 
+ #include <systemd/sd-daemon.h>
+ 
+ #include "kiosk-backgrounds.h"
+ #include "kiosk-input-sources-manager.h"
+ #include "kiosk-service.h"
+ 
+ #include "org.gnome.DisplayManager.Manager.h"
+ 
+ struct _KioskCompositor
+ {
+         MetaPlugin parent;
+ 
+         /* weak references */
+         MetaDisplay *display;
+         ClutterBackend *backend;
+         ClutterActor *stage;
+ 
+         /* strong references */
+         GCancellable *cancellable;
+         KioskBackgrounds *backgrounds;
+         KioskInputSourcesManager *input_sources_manager;
+         KioskService *service;
+ };
+ 
+ enum {
+         X_SERVER_EVENT,
+@@ -103,82 +104,171 @@ register_with_display_manager (KioskCompositor *self)
+         g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{ss}"));
+ 
+         gdm_manager_call_register_display_sync (display_manager,
+                                                 g_variant_builder_end (&builder),
+                                                 self->cancellable,
+                                                 &error);
+ 
+         if (error != NULL) {
+                 g_debug ("KioskCompositor: Could not register with display manager: %s",
+                          error->message);
+                 return;
+         }
+ }
+ 
+ static void
+ register_with_systemd (KioskCompositor *self)
+ {
+         sd_notify (TRUE, "READY=1");
+ }
+ 
+ static void
+ register_session (KioskCompositor *self)
+ {
+         meta_register_with_session ();
+ 
+         register_with_display_manager (self);
+ 
+         register_with_systemd (self);
+ }
+ 
++static void
++on_builtin_keybinding_triggered (MetaDisplay     *display,
++                                 MetaWindow      *window,
++                                 ClutterKeyEvent *event,
++                                 MetaKeyBinding  *binding,
++                                 KioskCompositor *self)
++{
++        g_debug ("KioskCompositor: Ignoring '%s' request",
++                 meta_key_binding_get_name (binding));
++}
++
++static void
++neuter_builtin_keybindings (KioskCompositor *self)
++{
++        const char *builtin_keybindings[] = {
++                "switch-to-workspace-1",
++                "switch-to-workspace-2",
++                "switch-to-workspace-3",
++                "switch-to-workspace-4",
++                "switch-to-workspace-5",
++                "switch-to-workspace-6",
++                "switch-to-workspace-7",
++                "switch-to-workspace-8",
++                "switch-to-workspace-9",
++                "switch-to-workspace-10",
++                "switch-to-workspace-11",
++                "switch-to-workspace-12",
++                "switch-to-workspace-left",
++                "switch-to-workspace-right",
++                "switch-to-workspace-up",
++                "switch-to-workspace-down",
++                "switch-to-workspace-last",
++                "panel-main-menu",
++                "panel-run-dialog",
++                "set-spew-mark",
++                "switch-monitor",
++                "rotate-monitor",
++                "switch-to-session-1",
++                "switch-to-session-2",
++                "switch-to-session-3",
++                "switch-to-session-4",
++                "switch-to-session-5",
++                "switch-to-session-6",
++                "switch-to-session-7",
++                "switch-to-session-8",
++                "switch-to-session-9",
++                "switch-to-session-10",
++                "switch-to-session-11",
++                "switch-to-session-12",
++                "restore-shortcuts",
++                "activate-window-menu",
++                "toggle-above",
++                "toggle-shaded",
++                "minimize",
++                "toggle-on-all-workspaces",
++                "move-to-workspace-1",
++                "move-to-workspace-2",
++                "move-to-workspace-3",
++                "move-to-workspace-4",
++                "move-to-workspace-5",
++                "move-to-workspace-6",
++                "move-to-workspace-7",
++                "move-to-workspace-8",
++                "move-to-workspace-9",
++                "move-to-workspace-10",
++                "move-to-workspace-11",
++                "move-to-workspace-12",
++                "move-to-workspace-last",
++                "move-to-workspace-left",
++                "move-to-workspace-right",
++                "move-to-workspace-up",
++                "move-to-workspace-down",
++                NULL
++        };
++        size_t i;
++
++        g_debug ("KioskCompositor: Neutering builtin keybindings");
++
++        for (i = 0; builtin_keybindings[i] != NULL; i++) {
++                meta_keybindings_set_custom_handler (builtin_keybindings[i],
++                                                     (MetaKeyHandlerFunc)
++                                                     on_builtin_keybinding_triggered,
++                                                     self,
++                                                     NULL);
++        }
++}
++
+ static void
+ kiosk_compositor_start (MetaPlugin *plugin)
+ {
+         KioskCompositor *self = KIOSK_COMPOSITOR (plugin);
+         g_autoptr (GError) error = NULL;
+ 
+         g_set_weak_pointer (&self->display, meta_plugin_get_display (META_PLUGIN (self)));
+         g_set_weak_pointer (&self->backend, clutter_get_default_backend ());
+         g_set_weak_pointer (&self->stage, meta_get_stage_for_display (self->display));
+ 
+         clutter_actor_show (self->stage);
+ 
+         self->cancellable = g_cancellable_new ();
+ 
+         self->service = kiosk_service_new (self);
+         kiosk_service_start (self->service, &error);
+ 
+         if (error != NULL) {
+                 g_debug ("KioskCompositor: Could not start D-Bus service: %s", error->message);
+                 g_clear_error (&error);
+         }
+ 
++        neuter_builtin_keybindings (self);
++
+         self->backgrounds = kiosk_backgrounds_new (self);
+         self->input_sources_manager = kiosk_input_sources_manager_new (self);
+ 
+         register_session (self);
+ }
+ 
+ static void
+ kiosk_compositor_minimize (MetaPlugin      *plugin,
+                            MetaWindowActor *actor)
+ {
+         meta_plugin_minimize_completed (plugin, actor);
+ }
+ 
+ static void
+ kiosk_compositor_unminimize (MetaPlugin      *plugin,
+                              MetaWindowActor *actor)
+ {
+         meta_plugin_unminimize_completed (plugin, actor);
+ }
+ 
+ static void
+ kiosk_compositor_size_changed (MetaPlugin      *plugin,
+                                MetaWindowActor *actor)
+ {
+         g_assert (META_PLUGIN_CLASS (kiosk_compositor_parent_class)->size_changed == NULL);
+ }
+ 
+ static void
+ kiosk_compositor_size_change (MetaPlugin      *plugin,
+                               MetaWindowActor *actor,
+-- 
+2.31.1
+
