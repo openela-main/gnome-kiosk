@@ -1,0 +1,46 @@
+From eeb5eb5688fd55fad3bb7e07c250cdd1f580b5ca Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Wed, 11 Aug 2021 15:05:22 -0400
+Subject: [PATCH 5/6] kiosk-script: Add a hint about using firefox to the kiosk
+ script
+
+Many kiosk deployments are going to use a web browser, so it makes
+sense to give a hint about how to do that.
+
+This commit suggests firefox --kiosk in the script comment
+---
+ kiosk-script/gnome-kiosk-script | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/kiosk-script/gnome-kiosk-script b/kiosk-script/gnome-kiosk-script
+index b595cd8..989af41 100755
+--- a/kiosk-script/gnome-kiosk-script
++++ b/kiosk-script/gnome-kiosk-script
+@@ -1,23 +1,24 @@
+ #!/usr/bin/sh
+ 
+ if [ ! -e ~/.local/bin/gnome-kiosk-script ]; then
+     mkdir -p ~/.local/bin ~/.config
+     cat > ~/.local/bin/gnome-kiosk-script <<- "EOF"
+ 	#!/bin/sh
+ 	# This script is located in ~/.local/bin.
+ 	# It's provided as an example script to show how
+ 	# the kiosk session works.  At the moment, the script
+ 	# just starts a text editor open to itself, but it
+ 	# should get customized to instead start a full screen
+ 	# application designed for the kiosk deployment.
++	# e.g., firefox --kiosk https://www.google.com
+ 	gedit ~/.local/bin/gnome-kiosk-script
+ 
+ 	sleep 1.0
+ 	exec "$0" "$@"
+ EOF
+ 
+     chmod +x ~/.local/bin/gnome-kiosk-script
+     touch ~/.config/gnome-initial-setup-done
+ fi
+ 
+ exec ~/.local/bin/gnome-kiosk-script "$@"
+-- 
+2.31.1
+

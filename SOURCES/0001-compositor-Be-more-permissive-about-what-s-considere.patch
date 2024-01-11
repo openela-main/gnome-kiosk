@@ -1,0 +1,89 @@
+From a57b5436cdce6b09daf968d1ff563b0b2e233daa Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Thu, 6 Oct 2022 11:01:20 -0400
+Subject: [PATCH] compositor: Be more permissive about what's considered
+ fullscreen
+
+GNOME Kiosk will automatically fullscreen the application started
+for it, but sometimes that application will start another app.
+
+The second app should not be automatically fullscreened.
+
+Some apps go fullscreen without actually going fullscreen though.
+They just go monitor sized.
+
+This commit makes sure those apps count as fullscreen too.
+---
+ compositor/kiosk-compositor.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/compositor/kiosk-compositor.c b/compositor/kiosk-compositor.c
+index 2db58ed..c611bb9 100644
+--- a/compositor/kiosk-compositor.c
++++ b/compositor/kiosk-compositor.c
+@@ -282,61 +282,61 @@ kiosk_compositor_size_change (MetaPlugin      *plugin,
+ static gboolean
+ kiosk_compositor_wants_window_fullscreen (KioskCompositor *self,
+                                           MetaWindow      *window)
+ {
+         MetaWindowType window_type;
+         g_autoptr (GList) windows = NULL;
+         GList *node;
+ 
+         if (!meta_window_allows_resize (window)) {
+                 g_debug ("KioskCompositor: Window does not allow resizes");
+                 return FALSE;
+         }
+ 
+         if (meta_window_is_override_redirect (window)) {
+                 g_debug ("KioskCompositor: Window is override redirect");
+                 return FALSE;
+         }
+ 
+         window_type = meta_window_get_window_type (window);
+ 
+         if (window_type != META_WINDOW_NORMAL) {
+                 g_debug ("KioskCompositor: Window is not normal");
+                 return FALSE;
+         }
+ 
+         windows = meta_display_get_tab_list (self->display, META_TAB_LIST_NORMAL_ALL, NULL);
+ 
+         for (node = windows; node != NULL; node = node->next) {
+                 MetaWindow *existing_window = node->data;
+ 
+-                if (meta_window_is_fullscreen (existing_window)) {
++                if (meta_window_is_monitor_sized (existing_window)) {
+                         return FALSE;
+                 }
+         }
+ 
+         return TRUE;
+ }
+ 
+ static gboolean
+ kiosk_compositor_wants_window_above (KioskCompositor *self,
+                                      MetaWindow      *window)
+ {
+         if (meta_window_is_screen_sized (window)) {
+                 return FALSE;
+         }
+ 
+         if (meta_window_is_monitor_sized (window)) {
+                 return FALSE;
+         }
+ 
+         return TRUE;
+ }
+ 
+ static void
+ on_faded_in (KioskCompositor   *self,
+              ClutterTransition *transition)
+ {
+         MetaWindowActor *actor = g_object_get_data (G_OBJECT (transition), "actor");
+ 
+         meta_plugin_map_completed (META_PLUGIN (self), actor);
+ }
+-- 
+2.35.1
+

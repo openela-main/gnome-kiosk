@@ -1,0 +1,28 @@
+From 3e9a6ea82edc0bbd57c0d3088186c30823b956ec Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Wed, 11 Aug 2021 15:06:42 -0400
+Subject: [PATCH 6/6] kiosk-script: Send SIGHUP to script at shutdown time
+
+Since the kiosk script is a shell script, it ignores SIGTERM.
+We should send it a hang up signal first to make it comply.
+---
+ kiosk-script/systemd/org.gnome.Kiosk.Script.service.in | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/kiosk-script/systemd/org.gnome.Kiosk.Script.service.in b/kiosk-script/systemd/org.gnome.Kiosk.Script.service.in
+index 8194f1c..e4da546 100644
+--- a/kiosk-script/systemd/org.gnome.Kiosk.Script.service.in
++++ b/kiosk-script/systemd/org.gnome.Kiosk.Script.service.in
+@@ -1,8 +1,9 @@
+ [Unit]
+ Description=Kiosk script
+ BindsTo=gnome-session.target
+ After=gnome-session.target
+ 
+ [Service]
+ ExecStart=@bindir@/gnome-kiosk-script
+ Restart=always
++SendSIGHUP=true
+-- 
+2.31.1
+

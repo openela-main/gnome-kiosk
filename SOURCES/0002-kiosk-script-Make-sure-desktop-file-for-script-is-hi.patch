@@ -1,0 +1,31 @@
+From dccfdfa0852cba4b2ccd7d0daa8f9c779af4cb16 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Wed, 11 Aug 2021 14:51:22 -0400
+Subject: [PATCH 2/6] kiosk-script: Make sure desktop file for script is hidden
+ under systemd
+
+At the moment the kiosk-script session supports both systemd --user
+sessions and old school gonme-session-only sessions. Unfortunately,
+the desktop file for the Script application is missing the magic line
+to make it get ignored when systemd --user is used.
+
+That leads to the script getting started twice
+
+This commit adds the magic line.
+---
+ kiosk-script/desktop/org.gnome.Kiosk.Script.desktop.in.in | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/kiosk-script/desktop/org.gnome.Kiosk.Script.desktop.in.in b/kiosk-script/desktop/org.gnome.Kiosk.Script.desktop.in.in
+index dd562b2..981dbc9 100644
+--- a/kiosk-script/desktop/org.gnome.Kiosk.Script.desktop.in.in
++++ b/kiosk-script/desktop/org.gnome.Kiosk.Script.desktop.in.in
+@@ -1,4 +1,5 @@
+ [Desktop Entry]
+ Name=Kiosk Script
+ Type=Application
+ Exec=gnome-kiosk-script
++X-GNOME-HiddenUnderSystemd=true
+-- 
+2.31.1
+

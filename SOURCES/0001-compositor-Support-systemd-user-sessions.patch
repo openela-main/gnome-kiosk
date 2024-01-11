@@ -1,0 +1,429 @@
+From 00aa37d927c3fd24769bd5c68a8a1ddc9acfb7bd Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Fri, 6 Aug 2021 17:51:14 -0400
+Subject: [PATCH 1/2] compositor: Support systemd --user sessions
+
+This commit adds unit files for supporting starting org.gnome.Kiosk
+from systemd --user.
+---
+ compositor/data/org.gnome.Kiosk.desktop.in.in |  1 +
+ .../data/systemd/org.gnome.Kiosk.target       | 10 ++++++++
+ .../org.gnome.Kiosk@wayland.service.in        | 20 ++++++++++++++++
+ .../systemd/org.gnome.Kiosk@x11.service.in    | 20 ++++++++++++++++
+ compositor/kiosk-compositor.c                 | 10 ++++++++
+ meson.build                                   | 24 +++++++++++++++++++
+ 6 files changed, 85 insertions(+)
+ create mode 100644 compositor/data/systemd/org.gnome.Kiosk.target
+ create mode 100644 compositor/data/systemd/org.gnome.Kiosk@wayland.service.in
+ create mode 100644 compositor/data/systemd/org.gnome.Kiosk@x11.service.in
+
+diff --git a/compositor/data/org.gnome.Kiosk.desktop.in.in b/compositor/data/org.gnome.Kiosk.desktop.in.in
+index bb603c8..cdbbe6a 100644
+--- a/compositor/data/org.gnome.Kiosk.desktop.in.in
++++ b/compositor/data/org.gnome.Kiosk.desktop.in.in
+@@ -1,12 +1,13 @@
+ [Desktop Entry]
+ Type=Application
+ Name=GNOME Kiosk
+ Comment=Compositor for Kiosk and Single Application deployments
+ Exec=@bindir@/gnome-kiosk
+ Categories=GNOME;GTK;Core;System;
+ OnlyShowIn=GNOME;
+ NoDisplay=true
+ X-GNOME-Autostart-Phase=DisplayServer
+ X-GNOME-Provides=panel;windowmanager;
+ X-GNOME-Autostart-Notify=true
+ X-GNOME-AutoRestart=false
++X-GNOME-HiddenUnderSystemd=true
+diff --git a/compositor/data/systemd/org.gnome.Kiosk.target b/compositor/data/systemd/org.gnome.Kiosk.target
+new file mode 100644
+index 0000000..eb92b4a
+--- /dev/null
++++ b/compositor/data/systemd/org.gnome.Kiosk.target
+@@ -0,0 +1,10 @@
++[Unit]
++Description=GNOME Kiosk
++DefaultDependencies=no
++
++Requisite=gnome-session-initialized.target
++PartOf=gnome-session-initialized.target
++Before=gnome-session-initialized.target
++
++Wants=org.gnome.Kiosk@wayland.service
++Wants=org.gnome.Kiosk@x11.service
+diff --git a/compositor/data/systemd/org.gnome.Kiosk@wayland.service.in b/compositor/data/systemd/org.gnome.Kiosk@wayland.service.in
+new file mode 100644
+index 0000000..19cd4a0
+--- /dev/null
++++ b/compositor/data/systemd/org.gnome.Kiosk@wayland.service.in
+@@ -0,0 +1,20 @@
++[Unit]
++Description=GNOME Kiosk on Wayland
++OnFailure=gnome-session-shutdown.target
++OnFailureJobMode=replace-irreversibly
++CollectMode=inactive-or-failed
++RefuseManualStart=on
++RefuseManualStop=on
++After=gnome-session-manager.target
++Requisite=gnome-session-initialized.target
++PartOf=gnome-session-initialized.target
++Before=gnome-session-initialized.target
++ConditionEnvironment=XDG_SESSION_TYPE=%I
++
++[Service]
++Slice=session.slice
++Type=notify
++ExecStart=/usr/bin/gnome-kiosk
++ExecStopPost=-/bin/sh -c 'test "$SERVICE_RESULT" != "exec-condition" && systemctl --user unset-environment GNOME_SETUP_DISPLAY WAYLAND_DISPLAY DISPLAY XAUTHORITY'
++Restart=no
++TimeoutStopSec=5
+diff --git a/compositor/data/systemd/org.gnome.Kiosk@x11.service.in b/compositor/data/systemd/org.gnome.Kiosk@x11.service.in
+new file mode 100644
+index 0000000..291baaa
+--- /dev/null
++++ b/compositor/data/systemd/org.gnome.Kiosk@x11.service.in
+@@ -0,0 +1,20 @@
++[Unit]
++Description=GNOME Kiosk on X11
++OnFailure=gnome-session-failed.target
++OnFailureJobMode=replace
++CollectMode=inactive-or-failed
++RefuseManualStart=on
++RefuseManualStop=on
++After=gnome-session-manager.target
++Requisite=gnome-session-initialized.target
++PartOf=gnome-session-initialized.target
++Before=gnome-session-initialized.target
++ConditionEnvironment=XDG_SESSION_TYPE=%I
++
++[Service]
++Slice=session.slice
++Type=notify
++ExecStart=/usr/bin/gnome-kiosk
++Restart=always
++RestartSec=0ms
++TimeoutStopSec=5
+diff --git a/compositor/kiosk-compositor.c b/compositor/kiosk-compositor.c
+index 6753a87..43329c7 100644
+--- a/compositor/kiosk-compositor.c
++++ b/compositor/kiosk-compositor.c
+@@ -1,46 +1,48 @@
+ #include "config.h"
+ #include "kiosk-compositor.h"
+ 
+ #include <stdlib.h>
+ #include <string.h>
+ 
+ #include <glib-object.h>
+ 
+ #include <clutter/clutter.h>
+ #include <clutter/x11/clutter-x11.h>
+ #include <meta/common.h>
+ #include <meta/display.h>
+ #include <meta/main.h>
+ #include <meta/util.h>
+ #include <meta/meta-window-group.h>
+ 
++#include <systemd/sd-daemon.h>
++
+ #include "kiosk-backgrounds.h"
+ #include "kiosk-input-sources-manager.h"
+ #include "kiosk-service.h"
+ 
+ #include "org.gnome.DisplayManager.Manager.h"
+ 
+ struct _KioskCompositor
+ {
+         MetaPlugin parent;
+ 
+         /* weak references */
+         MetaDisplay *display;
+         ClutterBackend *backend;
+         ClutterActor *stage;
+ 
+         /* strong references */
+         GCancellable *cancellable;
+         KioskBackgrounds *backgrounds;
+         KioskInputSourcesManager *input_sources_manager;
+         KioskService *service;
+ };
+ 
+ enum {
+         X_SERVER_EVENT,
+         NUMBER_OF_SIGNALS
+ };
+ 
+ static guint signals [NUMBER_OF_SIGNALS] = { 0, };
+ 
+ G_DEFINE_TYPE (KioskCompositor, kiosk_compositor, META_TYPE_PLUGIN)
+@@ -85,66 +87,74 @@ register_with_display_manager (KioskCompositor *self)
+         }
+ 
+         display_manager = gdm_manager_proxy_new_sync (system_bus,
+                                                       G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES |
+                                                       G_DBUS_PROXY_FLAGS_DO_NOT_CONNECT_SIGNALS,
+                                                       "org.gnome.DisplayManager",
+                                                       "/org/gnome/DisplayManager/Manager",
+                                                       self->cancellable,
+                                                       &error);
+ 
+         if (error != NULL) {
+                 g_debug ("KioskCompositor: Could not contact display manager: %s",
+                          error->message);
+                 return;
+         }
+ 
+         g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{ss}"));
+ 
+         gdm_manager_call_register_display_sync (display_manager,
+                                                 g_variant_builder_end (&builder),
+                                                 self->cancellable,
+                                                 &error);
+ 
+         if (error != NULL) {
+                 g_debug ("KioskCompositor: Could not register with display manager: %s",
+                          error->message);
+                 return;
+         }
+ }
+ 
++static void
++register_with_systemd (KioskCompositor *self)
++{
++        sd_notify (TRUE, "READY=1");
++}
++
+ static void
+ register_session (KioskCompositor *self)
+ {
+         meta_register_with_session ();
+ 
+         register_with_display_manager (self);
++
++        register_with_systemd (self);
+ }
+ 
+ static void
+ kiosk_compositor_start (MetaPlugin *plugin)
+ {
+         KioskCompositor *self = KIOSK_COMPOSITOR (plugin);
+         g_autoptr (GError) error = NULL;
+ 
+         g_set_weak_pointer (&self->display, meta_plugin_get_display (META_PLUGIN (self)));
+         g_set_weak_pointer (&self->backend, clutter_get_default_backend ());
+         g_set_weak_pointer (&self->stage, meta_get_stage_for_display (self->display));
+ 
+         clutter_actor_show (self->stage);
+ 
+         self->cancellable = g_cancellable_new ();
+ 
+         self->service = kiosk_service_new (self);
+         kiosk_service_start (self->service, &error);
+ 
+         if (error != NULL) {
+                 g_debug ("KioskCompositor: Could not start D-Bus service: %s", error->message);
+                 g_clear_error (&error);
+         }
+ 
+         self->backgrounds = kiosk_backgrounds_new (self);
+         self->input_sources_manager = kiosk_input_sources_manager_new (self);
+ 
+         register_session (self);
+ }
+ 
+diff --git a/meson.build b/meson.build
+index 0766f8d..c2988ad 100644
+--- a/meson.build
++++ b/meson.build
+@@ -9,60 +9,64 @@ c_compiler = meson.get_compiler('c')
+ 
+ gnome = import('gnome')
+ i18n = import('i18n')
+ 
+ prefix = get_option('prefix')
+ datadir = join_paths(prefix, get_option('datadir'))
+ bindir = join_paths(prefix, get_option('bindir'))
+ localedir = join_paths(datadir, 'locale')
+ desktop_data_dir = join_paths(datadir, 'applications')
+ session_dir = join_paths(datadir, 'gnome-session', 'sessions')
+ xsessions_dir = join_paths(datadir, 'xsessions')
+ 
+ po_dir = join_paths(meson.current_source_dir(), 'po')
+ 
+ config_data = configuration_data()
+ config_data.set_quoted('GETTEXT_PACKAGE', meson.project_name())
+ config_data.set_quoted('VERSION', meson.project_version())
+ config_data.set_quoted('LOCALEDIR', localedir)
+ 
+ config_h = configure_file(
+         input: 'config.h.meson',
+         output: 'config.h',
+         configuration: config_data
+ )
+ 
+ meson.add_install_script ('meson/postinstall.py')
+ 
+ mutter_dependency = dependency('libmutter-8')
+ mutter_libdir = mutter_dependency.get_pkgconfig_variable('typelibdir')
+ 
++systemd_user_unit_dir = dependency('systemd').get_pkgconfig_variable('systemduserunitdir',
++                                                                     define_variable: ['prefix', prefix])
++systemd_dependency = dependency('libsystemd')
++
+ dbus_proxies = []
+ dbus_proxies += {
+         'prefix':   'org.gnome.DisplayManager',
+         'namespace': 'Gdm',
+         'interface': 'Manager',
+ }
+ 
+ dbus_proxies += {
+         'prefix':   'org.freedesktop',
+         'namespace': 'Sd',
+         'interface': 'locale1',
+ }
+ 
+ dbus_proxies += {
+         'prefix':   'org.gnome',
+         'namespace': 'Gsm',
+         'interface': 'SessionManager',
+ }
+ 
+ dbus_interface_sources_map = {}
+ foreach dbus_proxy : dbus_proxies
+         dbus_interface = dbus_proxy['prefix'] + '.' + dbus_proxy['interface']
+         dbus_interface_file = join_paths('dbus-interfaces', dbus_interface + '.xml')
+         sources = gnome.gdbus_codegen(dbus_interface, dbus_interface_file,
+                 namespace: dbus_proxy['namespace'],
+                 interface_prefix: dbus_proxy['prefix'],
+         )
+         dbus_interface_sources_map += { dbus_interface: sources }
+ endforeach
+ 
+@@ -75,103 +79,123 @@ sources = gnome.gdbus_codegen(dbus_interface, dbus_interface_file,
+         annotations: [
+                 [ dbus_interface, 'org.gtk.GDBus.C.Name', 'Service' ],
+                 [ dbus_interface + '.InputSources', 'org.gtk.GDBus.C.Name', 'InputSourcesManager' ],
+                 [ dbus_interface + '.InputSources.InputSource', 'org.gtk.GDBus.C.Name', 'InputSource' ],
+         ]
+ )
+ dbus_interface_sources_map += { dbus_interface: sources }
+ 
+ dbus_interface = 'org.gnome.Shell'
+ dbus_interface_file = join_paths('dbus-interfaces', dbus_interface + '.xml')
+ sources = gnome.gdbus_codegen(dbus_interface, dbus_interface_file,
+         namespace: 'Kiosk',
+         interface_prefix: 'org.gnome',
+         annotations: [
+                 [ dbus_interface, 'org.gtk.GDBus.C.Name', 'ShellDBusService' ]
+         ]
+ )
+ dbus_interface_sources_map += { dbus_interface: sources }
+ 
+ compositor_dependencies = []
+ compositor_dependencies += c_compiler.find_library('m')
+ compositor_dependencies += dependency('gio-2.0')
+ compositor_dependencies += dependency('glib-2.0')
+ compositor_dependencies += dependency('gnome-desktop-3.0')
+ compositor_dependencies += dependency('gobject-2.0')
+ compositor_dependencies += dependency('ibus-1.0')
+ compositor_dependencies += dependency('mutter-cogl-8')
+ compositor_dependencies += dependency('mutter-cogl-pango-8')
+ compositor_dependencies += dependency('mutter-clutter-8')
+ compositor_dependencies += mutter_dependency
++compositor_dependencies += systemd_dependency
+ 
+ compositor_sources = []
+ compositor_sources += 'compositor/kiosk-backgrounds.c'
+ compositor_sources += 'compositor/kiosk-compositor.c'
+ compositor_sources += 'compositor/kiosk-dbus-utils.c'
+ compositor_sources += 'compositor/kiosk-gobject-utils.c'
+ compositor_sources += 'compositor/kiosk-input-sources-manager.c'
+ compositor_sources += 'compositor/kiosk-input-engine-manager.c'
+ compositor_sources += 'compositor/kiosk-input-source-group.c'
+ compositor_sources += 'compositor/kiosk-service.c'
+ compositor_sources += 'compositor/kiosk-shell-service.c'
+ compositor_sources += 'compositor/kiosk-x-keyboard-manager.c'
+ compositor_sources += 'compositor/main.c'
+ 
+ foreach dbus_interface, sources: dbus_interface_sources_map
+         compositor_sources += sources
+ endforeach
+ 
+ executable('gnome-kiosk', compositor_sources,
+         dependencies: compositor_dependencies,
+         build_rpath: mutter_libdir,
+         install_rpath: mutter_libdir,
+         install: true
+ )
+ 
+ desktop_config_data = configuration_data()
+ desktop_config_data.set('bindir', bindir)
+ 
+ desktop_file = configure_file(
+         input: 'compositor/data/org.gnome.Kiosk.desktop.in.in',
+         output: 'org.gnome.Kiosk.desktop.in',
+         configuration: desktop_config_data
+ )
+ 
+ i18n.merge_file('desktop',
+         input: desktop_file,
+         output: 'org.gnome.Kiosk.desktop',
+         po_dir: po_dir,
+         install: true,
+         install_dir: desktop_data_dir,
+         type: 'desktop'
+ )
+ 
++systemd_service_config_data = configuration_data()
++systemd_service_config_data.set('bindir', bindir)
++
++systemd_service_files = []
++systemd_service_files += 'compositor/data/systemd/org.gnome.Kiosk@wayland.service.in'
++systemd_service_files += 'compositor/data/systemd/org.gnome.Kiosk@x11.service.in'
++
++foreach service_file : systemd_service_files
++        configure_file(
++                input: service_file,
++                output: '@BASENAME@',
++                configuration: systemd_service_config_data,
++                install_dir: systemd_user_unit_dir
++        )
++endforeach
++
++install_data('compositor/data/systemd/org.gnome.Kiosk.target',
++             install_dir: systemd_user_unit_dir)
++
+ session_config_data = configuration_data()
+ session_config_data.set('required_components', 'org.gnome.Kiosk;org.gnome.Kiosk.SearchApp;')
+ 
+ session_file = configure_file(
+         input: 'search-app/org.gnome.Kiosk.SearchApp.session.desktop.in.in',
+         output: 'org.gnome.Kiosk.SearchApp.session.desktop.in',
+         configuration: session_config_data
+ )
+ 
+ subdir('input-selector')
+ 
+ i18n.merge_file('desktop',
+         input: session_file,
+         output: 'org.gnome.Kiosk.SearchApp.session',
+         po_dir: po_dir,
+         install: true,
+         install_dir: session_dir,
+         type: 'desktop'
+ )
+ 
+ i18n.merge_file('desktop',
+         input: 'search-app/org.gnome.Kiosk.SearchApp.Session.desktop.in',
+         output: 'org.gnome.Kiosk.SearchApp.Session.desktop',
+         po_dir: po_dir,
+         install: true,
+         install_dir: xsessions_dir,
+         type: 'desktop'
+ )
+ 
+ search_app_desktop_file = configure_file(
+-- 
+2.31.1
+
