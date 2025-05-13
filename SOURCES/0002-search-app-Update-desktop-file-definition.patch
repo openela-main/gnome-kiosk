@@ -1,0 +1,30 @@
+From a94bce8532d6f9f9fb1fd888e54803220a733765 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Wed, 5 Mar 2025 14:23:49 +0100
+Subject: [PATCH 2/2] search-app: Update desktop file definition
+
+Firefox itself has nothing to do with neither Gtk or GNOME, no need to
+list those in the categories.
+
+(cherry picked from commit 7f6defb5d1afd4aeee55d286256879118ba9c008)
+---
+ search-app/org.gnome.Kiosk.SearchApp.desktop.in.in | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/search-app/org.gnome.Kiosk.SearchApp.desktop.in.in b/search-app/org.gnome.Kiosk.SearchApp.desktop.in.in
+index 40a8669..7d85d56 100644
+--- a/search-app/org.gnome.Kiosk.SearchApp.desktop.in.in
++++ b/search-app/org.gnome.Kiosk.SearchApp.desktop.in.in
+@@ -3,7 +3,6 @@ Type=Application
+ Name=Search Appliance
+ Comment=Sample Search Appliance Application for GNOME Kiosk
+ Exec=@bindir@/firefox --kiosk --private-window --new-instance  http://www.google.com
+-Categories=GNOME;GTK;Core;
+-OnlyShowIn=GNOME;
++Categories=Core;System;
+ NoDisplay=true
+-X-GNOME-AutoRestart=true
++X-GNOME-HiddenUnderSystemd=true
+-- 
+2.48.1
+

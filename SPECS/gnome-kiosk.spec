@@ -12,7 +12,7 @@
 
 Name:           gnome-kiosk
 Version:        40.0
-Release:        6%{?dist}
+Release:        7%{?dist}
 Summary:        Window management and application launching for GNOME
 
 License:        GPLv2+
@@ -53,6 +53,9 @@ Patch30001:     0001-compositor-Be-more-permissive-about-what-s-considere.patch
 # https://issues.redhat.com/browse/RHEL-25536
 Patch40001:     0001-input-selector-Add-missing-dependency-on-gio-unix-2..patch
 Patch40002:     0001-kiosk-script-Copy-and-run-the-script-from-XDG_RUNTIM.patch
+# https://issues.redhat.com/browse/RHEL-84030
+Patch50001:     0001-search-app-Add-systemd-session-files.patch
+Patch50002:     0002-search-app-Update-desktop-file-definition.patch
 
 %description
 GNOME Kiosk provides a desktop enviroment suitable for fixed purpose, or
@@ -113,12 +116,18 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/org.gnome.Kiosk.Searc
 %{_datadir}/xsessions/gnome-kiosk-script.desktop
 
 %files -n gnome-kiosk-search-appliance
+%{_userunitdir}/gnome-session@org.gnome.Kiosk.SearchApp.target.d/session.conf
+%{_userunitdir}/org.gnome.Kiosk.SearchApp.service
 %{_datadir}/applications/org.gnome.Kiosk.SearchApp.desktop
 %{_datadir}/gnome-session/sessions/org.gnome.Kiosk.SearchApp.session
 %{_datadir}/xsessions/org.gnome.Kiosk.SearchApp.Session.desktop
 %{_datadir}/wayland-sessions/org.gnome.Kiosk.SearchApp.Session.desktop
 
 %changelog
+* Tue Mar 18 2025 Olivier Fourdan <ofourdan@redhat.com> - 40.0-7
+- search-app: Add systemd session files
+  Resolves: https://issues.redhat.com/browse/RHEL-84030
+
 * Wed Dec 18 2024 Ray Strode <rstrode@redhat.com> - 40.0-6
 - Copy and run the script from XDG_RUNTIME_DIR
   Resolves: https://issues.redhat.com/browse/RHEL-25536
