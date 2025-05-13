@@ -12,7 +12,7 @@
 
 Name:           gnome-kiosk
 Version:        40.0
-Release:        5%{?dist}
+Release:        6%{?dist}
 Summary:        Window management and application launching for GNOME
 
 License:        GPLv2+
@@ -50,6 +50,9 @@ Patch20005:     0005-kiosk-script-Add-a-hint-about-using-firefox-to-the-k.patch
 Patch20006:     0006-kiosk-script-Send-SIGHUP-to-script-at-shutdown-time.patch
 
 Patch30001:     0001-compositor-Be-more-permissive-about-what-s-considere.patch
+# https://issues.redhat.com/browse/RHEL-25536
+Patch40001:     0001-input-selector-Add-missing-dependency-on-gio-unix-2..patch
+Patch40002:     0001-kiosk-script-Copy-and-run-the-script-from-XDG_RUNTIM.patch
 
 %description
 GNOME Kiosk provides a desktop enviroment suitable for fixed purpose, or
@@ -116,6 +119,10 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/org.gnome.Kiosk.Searc
 %{_datadir}/wayland-sessions/org.gnome.Kiosk.SearchApp.Session.desktop
 
 %changelog
+* Wed Dec 18 2024 Ray Strode <rstrode@redhat.com> - 40.0-6
+- Copy and run the script from XDG_RUNTIME_DIR
+  Resolves: https://issues.redhat.com/browse/RHEL-25536
+
 * Wed Nov 09 2022 Ray Strode <rstrode@redhat.com> - 40.0-5
 - Detect anaconda as the kiosk app better
   Resolves: #1999060

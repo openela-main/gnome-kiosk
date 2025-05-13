@@ -1,0 +1,31 @@
+From d68e2443746f47c6eecab0c4009b82628918561c Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Tue, 10 Dec 2024 13:56:13 +0100
+Subject: [PATCH] input-selector: Add missing dependency on gio-unix-2.0
+
+The build of input-selector may fail otherwise, as the generated code
+from gdbus-codegen cannot find the header file <gio/gunixfdlist.h>:
+
+input-selector/org.gnome.Kiosk.c:17:12: fatal error: gio/gunixfdlist.h:
+  No such file or directory
+  17 | #  include <gio/gunixfdlist.h>
+
+Adding the dependency ensures that the path to the header file is known.
+---
+ input-selector/meson.build | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/input-selector/meson.build b/input-selector/meson.build
+index 839426f..6aa90af 100644
+--- a/input-selector/meson.build
++++ b/input-selector/meson.build
+@@ -1,5 +1,6 @@
+ input_selector_dependencies = []
+ input_selector_dependencies += dependency('gio-2.0')
++input_selector_dependencies += dependency('gio-unix-2.0')
+ input_selector_dependencies += dependency('glib-2.0')
+ input_selector_dependencies += dependency('gobject-2.0')
+ input_selector_dependencies += dependency('gtk4')
+-- 
+2.47.1
+
