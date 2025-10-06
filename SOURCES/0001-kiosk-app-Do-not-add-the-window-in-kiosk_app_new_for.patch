@@ -1,0 +1,99 @@
+From 67cb8748dbc8c237d7b7486c7cec9e7902dcb51f Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Mon, 7 Oct 2024 18:09:32 +0200
+Subject: [PATCH] kiosk-app: Do not add the window in
+ kiosk_app_new_for_window()
+
+When a window has no matching application (like, when there is no
+corresponding desktop file), a KioskApp is created for the window and
+the window would be added to the newly-created KioskApp.
+
+However, by doing so, we add the window before the calling window
+tracker had a change to setup the state notify handler.
+
+As a result, the window tracker is never notified of the state change
+and the KioskApp is never added to the list of running applications in
+the KioskAppState.
+
+Too bad, since the introspection iterates on the running applications to
+report the windows.
+
+To avoid the issue, simply do not add the window so soon in
+kiosk_app_new_for_window(), it will be added in time in track_window()
+and the notifications will be correctly triggered.
+
+Fixes: commit 50ae635dc - kiosk-app: Add a new KioskApp class
+---
+ compositor/kiosk-app.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/compositor/kiosk-app.c b/compositor/kiosk-app.c
+index acc9d9e..5b19e4e 100644
+--- a/compositor/kiosk-app.c
++++ b/compositor/kiosk-app.c
+@@ -441,62 +441,60 @@ kiosk_app_remove_window (KioskApp   *app,
+         if (!meta_window_is_skip_taskbar (window))
+                 app->running_state->number_of_interesting_windows--;
+         kiosk_app_sync_running_state (app);
+ 
+         if (app->running_state->windows == NULL)
+                 g_clear_pointer (&app->running_state, unref_running_state);
+ 
+         g_signal_handlers_disconnect_by_func (window,
+                                               G_CALLBACK (kiosk_app_on_user_time_changed),
+                                               app);
+         g_signal_handlers_disconnect_by_func (window,
+                                               G_CALLBACK (kiosk_app_on_skip_taskbar_changed),
+                                               app);
+ 
+         g_object_unref (window);
+ 
+         g_signal_emit (app, kiosk_app_signals[WINDOWS_CHANGED], 0);
+ }
+ 
+ KioskApp *
+ kiosk_app_new_for_window (KioskCompositor *compositor,
+                           MetaWindow      *window)
+ {
+         KioskApp *app;
+ 
+         app = g_object_new (KIOSK_TYPE_APP, "compositor", compositor, NULL);
+ 
+         app->window_id_string = g_strdup_printf ("window:%d",
+                                                  meta_window_get_stable_sequence (window));
+ 
+-        kiosk_app_add_window (app, window);
+-
+         return app;
+ }
+ 
+ KioskApp *
+ kiosk_app_new (KioskCompositor *compositor,
+                GDesktopAppInfo *info)
+ {
+         KioskApp *app;
+ 
+         app = g_object_new (KIOSK_TYPE_APP,
+                             "compositor", compositor, "app-info", info, NULL);
+ 
+         return app;
+ }
+ 
+ const char *
+ kiosk_app_get_sandbox_id (KioskApp *app)
+ {
+         KioskAppWindowIter iter;
+         MetaWindow *window;
+ 
+         kiosk_app_window_iter_init (&iter, app);
+         while (kiosk_app_window_iter_next (&iter, &window)) {
+                 const char *sandbox_id = meta_window_get_sandboxed_app_id (window);
+ 
+                 if (sandbox_id)
+                         return sandbox_id;
+         }
+ 
+         return NULL;
+-- 
+2.46.0
+

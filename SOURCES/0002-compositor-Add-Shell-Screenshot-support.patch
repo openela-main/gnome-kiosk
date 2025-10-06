@@ -1,0 +1,892 @@
+From 0ab97a3be415e7cc3937d68fd66a421f96f45417 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Fri, 24 Jan 2025 09:41:04 +0100
+Subject: [PATCH 2/2] compositor: Add Shell Screenshot support
+
+Add support for the org.gnome.Shell.Screenshot DBus API which is
+required by the desktop portals.
+
+Not all of the org.gnome.Shell.Screenshot API is implemented though,
+only the non-interactive part which require no UI interaction are
+currently available. Also missing is the pick-color API.
+
+To have access to the Shell screenshot API from all other clients,
+gnome-kiosk needs to be started in unsafe mode (using the command line
+option "--unsafe-mode").
+
+Part-of: <https://gitlab.gnome.org/GNOME/gnome-kiosk/-/merge_requests/61>
+(cherry picked from commit 5338c8ab454b8cad607e2f696a9a352b375dff0d)
+---
+ compositor/kiosk-compositor.c                 |   4 +
+ compositor/kiosk-shell-screenshot-service.c   | 599 ++++++++++++++++++
+ compositor/kiosk-shell-screenshot-service.h   |  23 +
+ .../org.gnome.Shell.Screenshot.xml            | 161 +++++
+ meson.build                                   |  12 +
+ 5 files changed, 799 insertions(+)
+ create mode 100644 compositor/kiosk-shell-screenshot-service.c
+ create mode 100644 compositor/kiosk-shell-screenshot-service.h
+ create mode 100644 dbus-interfaces/org.gnome.Shell.Screenshot.xml
+
+diff --git a/compositor/kiosk-compositor.c b/compositor/kiosk-compositor.c
+index d5a2b64..8432a24 100644
+--- a/compositor/kiosk-compositor.c
++++ b/compositor/kiosk-compositor.c
+@@ -24,6 +24,7 @@
+ #include "kiosk-app-system.h"
+ #include "kiosk-window-tracker.h"
+ #include "kiosk-shell-introspect-service.h"
++#include "kiosk-shell-screenshot-service.h"
+ 
+ #include "org.gnome.DisplayManager.Manager.h"
+ 
+@@ -46,6 +47,7 @@ struct _KioskCompositor
+         KioskAppSystem              *app_system;
+         KioskWindowTracker          *tracker;
+         KioskShellIntrospectService *introspect_service;
++        KioskShellScreenshotService *screenshot_service;
+ };
+ 
+ enum
+@@ -250,6 +252,8 @@ kiosk_compositor_start (MetaPlugin *plugin)
+         self->tracker = kiosk_window_tracker_new (self, self->app_system);
+         self->introspect_service = kiosk_shell_introspect_service_new (self);
+         kiosk_shell_introspect_service_start (self->introspect_service, &error);
++        self->screenshot_service = kiosk_shell_screenshot_service_new (self);
++        kiosk_shell_screenshot_service_start (self->screenshot_service, &error);
+ 
+         if (error != NULL) {
+                 g_debug ("KioskCompositor: Could not start D-Bus service: %s", error->message);
+diff --git a/compositor/kiosk-shell-screenshot-service.c b/compositor/kiosk-shell-screenshot-service.c
+new file mode 100644
+index 0000000..a961905
+--- /dev/null
++++ b/compositor/kiosk-shell-screenshot-service.c
+@@ -0,0 +1,599 @@
++#include "config.h"
++#include "kiosk-shell-screenshot-service.h"
++
++#include <stdlib.h>
++#include <string.h>
++#include <meta/display.h>
++#include <meta/meta-context.h>
++
++#include "kiosk-compositor.h"
++#include "kiosk-screenshot.h"
++
++#define KIOSK_SHELL_SCREENSHOT_SERVICE_BUS_NAME "org.gnome.Shell.Screenshot"
++#define KIOSK_SHELL_SCREENSHOT_SERVICE_OBJECT_PATH "/org/gnome/Shell/Screenshot"
++
++struct _KioskShellScreenshotService
++{
++        KioskShellScreenshotDBusServiceSkeleton parent;
++
++        /* weak references */
++        KioskCompositor                        *compositor;
++        MetaDisplay                            *display;
++        MetaContext                            *context;
++
++        /* strong references */
++        GCancellable                           *cancellable;
++        KioskScreenshot                        *screenshot;
++
++        /* handles */
++        guint                                   bus_id;
++};
++
++struct KioskShellScreenshotCompletion
++{
++        KioskShellScreenshotDBusService *service;
++        GDBusMethodInvocation           *invocation;
++
++        gpointer                         data;
++};
++
++enum
++{
++        PROP_COMPOSITOR = 1,
++        NUMBER_OF_PROPERTIES
++};
++
++static GParamSpec *kiosk_shell_screenshot_service_properties[NUMBER_OF_PROPERTIES] = { NULL, };
++
++static void kiosk_shell_screenshot_dbus_service_interface_init (KioskShellScreenshotDBusServiceIface *interface);
++
++G_DEFINE_TYPE_WITH_CODE (KioskShellScreenshotService,
++                         kiosk_shell_screenshot_service,
++                         KIOSK_TYPE_SHELL_SCREENSHOT_DBUS_SERVICE_SKELETON,
++                         G_IMPLEMENT_INTERFACE (KIOSK_TYPE_SHELL_SCREENSHOT_DBUS_SERVICE,
++                                                kiosk_shell_screenshot_dbus_service_interface_init));
++
++static void kiosk_shell_screenshot_service_set_property (GObject      *object,
++                                                         guint         property_id,
++                                                         const GValue *value,
++                                                         GParamSpec   *param_spec);
++
++static void kiosk_shell_screenshot_service_constructed (GObject *object);
++static void kiosk_shell_screenshot_service_dispose (GObject *object);
++
++static void
++kiosk_shell_screenshot_service_class_init (KioskShellScreenshotServiceClass *shell_service_class)
++{
++        GObjectClass *object_class = G_OBJECT_CLASS (shell_service_class);
++
++        object_class->constructed = kiosk_shell_screenshot_service_constructed;
++        object_class->set_property = kiosk_shell_screenshot_service_set_property;
++        object_class->dispose = kiosk_shell_screenshot_service_dispose;
++
++        kiosk_shell_screenshot_service_properties[PROP_COMPOSITOR] =
++                g_param_spec_object ("compositor",
++                                     NULL,
++                                     NULL,
++                                     KIOSK_TYPE_COMPOSITOR,
++                                     G_PARAM_CONSTRUCT_ONLY
++                                     | G_PARAM_WRITABLE
++                                     | G_PARAM_STATIC_NAME);
++        g_object_class_install_properties (object_class,
++                                           NUMBER_OF_PROPERTIES,
++                                           kiosk_shell_screenshot_service_properties);
++}
++
++static void
++kiosk_shell_screenshot_service_set_property (GObject      *object,
++                                             guint         property_id,
++                                             const GValue *value,
++                                             GParamSpec   *param_spec)
++{
++        KioskShellScreenshotService *self = KIOSK_SHELL_SCREENSHOT_SERVICE (object);
++
++        switch (property_id) {
++        case PROP_COMPOSITOR:
++                g_set_weak_pointer (&self->compositor, g_value_get_object (value));
++                break;
++
++        default:
++                G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, param_spec);
++                break;
++        }
++}
++
++static void
++kiosk_shell_screenshot_service_dispose (GObject *object)
++{
++        KioskShellScreenshotService *self = KIOSK_SHELL_SCREENSHOT_SERVICE (object);
++
++        kiosk_shell_screenshot_service_stop (self);
++
++        g_clear_object (&self->screenshot);
++        g_clear_weak_pointer (&self->context);
++        g_clear_weak_pointer (&self->display);
++        g_clear_weak_pointer (&self->compositor);
++
++        G_OBJECT_CLASS (kiosk_shell_screenshot_service_parent_class)->dispose (object);
++}
++
++static void
++kiosk_shell_screenshot_service_constructed (GObject *object)
++{
++        KioskShellScreenshotService *self = KIOSK_SHELL_SCREENSHOT_SERVICE (object);
++
++        self->screenshot = kiosk_screenshot_new (self->compositor);
++
++        g_set_weak_pointer (&self->display, meta_plugin_get_display (META_PLUGIN (self->compositor)));
++        g_set_weak_pointer (&self->context, meta_display_get_context (self->display));
++
++        G_OBJECT_CLASS (kiosk_shell_screenshot_service_parent_class)->constructed (object);
++}
++
++static gboolean
++kiosk_shell_screenshot_check_access (KioskShellScreenshotService *self,
++                                     const char                  *client_unique_name)
++{
++        GValue value = G_VALUE_INIT;
++        gboolean unsafe_mode;
++
++        g_object_get_property (G_OBJECT (self->context), "unsafe-mode", &value);
++        unsafe_mode = g_value_get_boolean (&value);
++        g_debug ("KioskShellScreenshotService: unsafe-mode is %s",
++                 unsafe_mode ? "TRUE" : "FALSE");
++
++        return unsafe_mode;
++}
++
++static void
++completion_dispose (struct KioskShellScreenshotCompletion *completion)
++{
++        g_object_unref (completion->service);
++        g_object_unref (completion->invocation);
++        g_free (completion->data);
++
++        g_free (completion);
++}
++
++static struct KioskShellScreenshotCompletion *
++completion_new (KioskShellScreenshotDBusService *service,
++                GDBusMethodInvocation           *invocation,
++                const char                      *filename)
++{
++        struct KioskShellScreenshotCompletion *completion;
++
++        completion = g_new0 (struct KioskShellScreenshotCompletion, 1);
++        completion->service = g_object_ref (service);
++        completion->invocation = g_object_ref (invocation);
++        completion->data = g_strdup (filename);
++
++        return completion;
++}
++
++static gboolean
++kiosk_shell_screenshot_service_handle_flash_area (KioskShellScreenshotDBusService *object,
++                                                  GDBusMethodInvocation           *invocation,
++                                                  gint                             arg_x,
++                                                  gint                             arg_y,
++                                                  gint                             arg_width,
++                                                  gint                             arg_height)
++{
++        KioskShellScreenshotService *self = KIOSK_SHELL_SCREENSHOT_SERVICE (object);
++        const char *client_unique_name = g_dbus_method_invocation_get_sender (invocation);
++
++        g_debug ("KioskShellScreenshotService: Handling FlashArea(x=%i, y=%i, w=%i, h=%i) from %s",
++                 arg_x, arg_y, arg_width, arg_height, client_unique_name);
++
++        if (!kiosk_shell_screenshot_check_access (self, client_unique_name)) {
++                g_dbus_method_invocation_return_error (invocation,
++                                                       G_DBUS_ERROR,
++                                                       G_DBUS_ERROR_ACCESS_DENIED,
++                                                       "Permission denied");
++                return G_DBUS_METHOD_INVOCATION_HANDLED;
++        }
++
++        g_dbus_method_invocation_return_error (invocation,
++                                               G_DBUS_ERROR,
++                                               G_DBUS_ERROR_NOT_SUPPORTED,
++                                               "FlashArea is not supported");
++
++        return G_DBUS_METHOD_INVOCATION_HANDLED;
++}
++
++static gboolean
++kiosk_shell_screenshot_service_handle_interactive_screenshot (KioskShellScreenshotDBusService *object,
++                                                              GDBusMethodInvocation           *invocation)
++{
++        KioskShellScreenshotService *self = KIOSK_SHELL_SCREENSHOT_SERVICE (object);
++        const char *client_unique_name = g_dbus_method_invocation_get_sender (invocation);
++
++        g_debug ("KioskShellScreenshotService: Handling InteractiveScreenshot() from %s",
++                 client_unique_name);
++
++        if (!kiosk_shell_screenshot_check_access (self, client_unique_name)) {
++                g_dbus_method_invocation_return_error (invocation,
++                                                       G_DBUS_ERROR,
++                                                       G_DBUS_ERROR_ACCESS_DENIED,
++                                                       "Permission denied");
++                return G_DBUS_METHOD_INVOCATION_HANDLED;
++        }
++
++        g_dbus_method_invocation_return_error (invocation,
++                                               G_DBUS_ERROR,
++                                               G_DBUS_ERROR_NOT_SUPPORTED,
++                                               "InteractiveScreenshot is not supported");
++
++        return G_DBUS_METHOD_INVOCATION_HANDLED;
++}
++
++static void
++screenshot_ready_callback (GObject      *source_object,
++                           GAsyncResult *result,
++                           gpointer      data)
++{
++        struct KioskShellScreenshotCompletion *completion = data;
++        KioskShellScreenshotService *self = KIOSK_SHELL_SCREENSHOT_SERVICE (completion->service);
++        g_autoptr (GError) error = NULL;
++        gboolean success = TRUE;
++
++        kiosk_screenshot_screenshot_finish (self->screenshot,
++                                            result,
++                                            NULL,
++                                            &error);
++
++        if (error) {
++                g_warning ("Screenshot failed: %s", error->message);
++                success = FALSE;
++        }
++
++        kiosk_shell_screenshot_dbus_service_complete_screenshot (completion->service,
++                                                                 completion->invocation,
++                                                                 success,
++                                                                 completion->data);
++
++        completion_dispose (completion);
++}
++
++static gboolean
++kiosk_shell_screenshot_service_handle_screenshot (KioskShellScreenshotDBusService *object,
++                                                  GDBusMethodInvocation           *invocation,
++                                                  gboolean                         arg_include_cursor,
++                                                  gboolean                         arg_flash,
++                                                  const gchar                     *arg_filename)
++{
++        KioskShellScreenshotService *self = KIOSK_SHELL_SCREENSHOT_SERVICE (object);
++        const char *client_unique_name = g_dbus_method_invocation_get_sender (invocation);
++        struct KioskShellScreenshotCompletion *completion;
++        g_autoptr (GFile) file = NULL;
++        g_autoptr (GFileOutputStream) stream = NULL;
++        g_autoptr (GError) error = NULL;
++        g_autoptr (GAsyncResult) result = NULL;
++
++        g_debug ("KioskShellScreenshotService: Handling Screenshot(cursor=%i, flash=%i, file='%s') from %s",
++                 arg_include_cursor, arg_flash, arg_filename, client_unique_name);
++
++        if (!kiosk_shell_screenshot_check_access (self, client_unique_name)) {
++                g_dbus_method_invocation_return_error (invocation,
++                                                       G_DBUS_ERROR,
++                                                       G_DBUS_ERROR_ACCESS_DENIED,
++                                                       "Permission denied");
++                return G_DBUS_METHOD_INVOCATION_HANDLED;
++        }
++
++        file = g_file_new_for_path (arg_filename);
++        stream = g_file_create (file, G_FILE_CREATE_NONE, NULL, &error);
++        if (error) {
++                g_dbus_method_invocation_return_error (invocation,
++                                                       G_DBUS_ERROR,
++                                                       G_DBUS_ERROR_FAILED,
++                                                       "Error creating file: %s",
++                                                       error->message);
++
++                return G_DBUS_METHOD_INVOCATION_HANDLED;
++        }
++
++        completion = completion_new (object, invocation, arg_filename);
++        kiosk_screenshot_screenshot (self->screenshot,
++                                     arg_include_cursor,
++                                     G_OUTPUT_STREAM (stream),
++                                     screenshot_ready_callback,
++                                     completion);
++
++        return G_DBUS_METHOD_INVOCATION_HANDLED;
++}
++
++static void
++screenshot_area_ready_callback (GObject      *source_object,
++                                GAsyncResult *result,
++                                gpointer      data)
++{
++        struct KioskShellScreenshotCompletion *completion = data;
++        KioskShellScreenshotService *self = KIOSK_SHELL_SCREENSHOT_SERVICE (completion->service);
++        g_autoptr (GError) error = NULL;
++        gboolean success = TRUE;
++
++        kiosk_screenshot_screenshot_area_finish (self->screenshot,
++                                                 result,
++                                                 NULL,
++                                                 &error);
++
++        if (error) {
++                g_warning ("Screenshot area failed: %s", error->message);
++                success = FALSE;
++        }
++
++        kiosk_shell_screenshot_dbus_service_complete_screenshot_area (completion->service,
++                                                                      completion->invocation,
++                                                                      success,
++                                                                      completion->data);
++
++        completion_dispose (completion);
++}
++
++static gboolean
++kiosk_shell_screenshot_service_handle_screenshot_area (KioskShellScreenshotDBusService *object,
++                                                       GDBusMethodInvocation           *invocation,
++                                                       gint                             arg_x,
++                                                       gint                             arg_y,
++                                                       gint                             arg_width,
++                                                       gint                             arg_height,
++                                                       gboolean                         arg_flash,
++                                                       const gchar                     *arg_filename)
++{
++        KioskShellScreenshotService *self = KIOSK_SHELL_SCREENSHOT_SERVICE (object);
++        const char *client_unique_name = g_dbus_method_invocation_get_sender (invocation);
++        struct KioskShellScreenshotCompletion *completion;
++        g_autoptr (GFile) file = NULL;
++        g_autoptr (GFileOutputStream) stream = NULL;
++        g_autoptr (GError) error = NULL;
++        g_autoptr (GAsyncResult) result = NULL;
++
++        g_debug ("KioskShellScreenshotService: Handling ScreenshotArea(x=%i, y=%i, w=%i, h=%i, flash=%i, file='%s') from %s",
++                 arg_x, arg_y, arg_width, arg_height, arg_flash, arg_filename, client_unique_name);
++
++        if (!kiosk_shell_screenshot_check_access (self, client_unique_name)) {
++                g_dbus_method_invocation_return_error (invocation,
++                                                       G_DBUS_ERROR,
++                                                       G_DBUS_ERROR_ACCESS_DENIED,
++                                                       "Permission denied");
++                return G_DBUS_METHOD_INVOCATION_HANDLED;
++        }
++
++        file = g_file_new_for_path (arg_filename);
++        stream = g_file_create (file, G_FILE_CREATE_NONE, NULL, &error);
++        if (error) {
++                g_dbus_method_invocation_return_error (invocation,
++                                                       G_DBUS_ERROR,
++                                                       G_DBUS_ERROR_FAILED,
++                                                       "Error creating file: %s",
++                                                       error->message);
++
++                return G_DBUS_METHOD_INVOCATION_HANDLED;
++        }
++
++        completion = completion_new (object, invocation, arg_filename);
++        kiosk_screenshot_screenshot_area (self->screenshot,
++                                          arg_x,
++                                          arg_y,
++                                          arg_width,
++                                          arg_height,
++                                          G_OUTPUT_STREAM (stream),
++                                          screenshot_area_ready_callback,
++                                          completion);
++
++        return G_DBUS_METHOD_INVOCATION_HANDLED;
++}
++
++static void
++screenshot_window_ready_callback (GObject      *source_object,
++                                  GAsyncResult *result,
++                                  gpointer      data)
++{
++        struct KioskShellScreenshotCompletion *completion = data;
++        KioskShellScreenshotService *self = KIOSK_SHELL_SCREENSHOT_SERVICE (completion->service);
++        g_autoptr (GError) error = NULL;
++        gboolean success = TRUE;
++
++        kiosk_screenshot_screenshot_window_finish (self->screenshot,
++                                                   result,
++                                                   NULL,
++                                                   &error);
++
++        if (error) {
++                g_warning ("Screenshot window failed: %s", error->message);
++                success = FALSE;
++        }
++
++        kiosk_shell_screenshot_dbus_service_complete_screenshot_window (completion->service,
++                                                                        completion->invocation,
++                                                                        success,
++                                                                        completion->data);
++
++        completion_dispose (completion);
++}
++
++static gboolean
++kiosk_shell_screenshot_service_handle_screenshot_window (KioskShellScreenshotDBusService *object,
++                                                         GDBusMethodInvocation           *invocation,
++                                                         gboolean                         arg_include_frame,
++                                                         gboolean                         arg_include_cursor,
++                                                         gboolean                         arg_flash,
++                                                         const gchar                     *arg_filename)
++{
++        KioskShellScreenshotService *self = KIOSK_SHELL_SCREENSHOT_SERVICE (object);
++        const char *client_unique_name = g_dbus_method_invocation_get_sender (invocation);
++        struct KioskShellScreenshotCompletion *completion;
++        g_autoptr (GFile) file = NULL;
++        g_autoptr (GFileOutputStream) stream = NULL;
++        g_autoptr (GError) error = NULL;
++        g_autoptr (GAsyncResult) result = NULL;
++
++        g_debug ("KioskShellScreenshotService: Handling ScreenshotWindow(frame=%i, cursor=%i, flash=%i, file='%s') from %s",
++                 arg_include_frame, arg_include_cursor, arg_flash, arg_filename, client_unique_name);
++
++        if (!kiosk_shell_screenshot_check_access (self, client_unique_name)) {
++                g_dbus_method_invocation_return_error (invocation,
++                                                       G_DBUS_ERROR,
++                                                       G_DBUS_ERROR_ACCESS_DENIED,
++                                                       "Permission denied");
++                return G_DBUS_METHOD_INVOCATION_HANDLED;
++        }
++
++        file = g_file_new_for_path (arg_filename);
++        stream = g_file_create (file, G_FILE_CREATE_NONE, NULL, &error);
++        if (error) {
++                g_dbus_method_invocation_return_error (invocation,
++                                                       G_DBUS_ERROR,
++                                                       G_DBUS_ERROR_FAILED,
++                                                       "Error creating file: %s",
++                                                       error->message);
++
++                return G_DBUS_METHOD_INVOCATION_HANDLED;
++        }
++
++        completion = completion_new (object, invocation, arg_filename);
++        kiosk_screenshot_screenshot_window (self->screenshot,
++                                            arg_include_frame,
++                                            arg_include_cursor,
++                                            G_OUTPUT_STREAM (stream),
++                                            screenshot_window_ready_callback,
++                                            completion);
++
++        return G_DBUS_METHOD_INVOCATION_HANDLED;
++}
++
++static gboolean
++kiosk_shell_screenshot_service_handle_select_area (KioskShellScreenshotDBusService *object,
++                                                   GDBusMethodInvocation           *invocation)
++{
++        KioskShellScreenshotService *self = KIOSK_SHELL_SCREENSHOT_SERVICE (object);
++        const char *client_unique_name = g_dbus_method_invocation_get_sender (invocation);
++
++        g_debug ("KioskShellScreenshotService: Handling SelectArea() from %s",
++                 client_unique_name);
++
++        if (!kiosk_shell_screenshot_check_access (self, client_unique_name)) {
++                g_dbus_method_invocation_return_error (invocation,
++                                                       G_DBUS_ERROR,
++                                                       G_DBUS_ERROR_ACCESS_DENIED,
++                                                       "Permission denied");
++                return G_DBUS_METHOD_INVOCATION_HANDLED;
++        }
++
++        g_dbus_method_invocation_return_error (invocation,
++                                               G_DBUS_ERROR,
++                                               G_DBUS_ERROR_NOT_SUPPORTED,
++                                               "SelectArea is not supported");
++
++        return G_DBUS_METHOD_INVOCATION_HANDLED;
++}
++
++static void
++kiosk_shell_screenshot_dbus_service_interface_init (KioskShellScreenshotDBusServiceIface *interface)
++{
++        interface->handle_flash_area =
++                kiosk_shell_screenshot_service_handle_flash_area;
++        interface->handle_interactive_screenshot =
++                kiosk_shell_screenshot_service_handle_interactive_screenshot;
++        interface->handle_screenshot =
++                kiosk_shell_screenshot_service_handle_screenshot;
++        interface->handle_screenshot_area =
++                kiosk_shell_screenshot_service_handle_screenshot_area;
++        interface->handle_screenshot_window =
++                kiosk_shell_screenshot_service_handle_screenshot_window;
++        interface->handle_select_area =
++                kiosk_shell_screenshot_service_handle_select_area;
++}
++
++static void
++kiosk_shell_screenshot_service_init (KioskShellScreenshotService *self)
++{
++        g_debug ("KioskShellScreenshotService: Initializing");
++}
++
++KioskShellScreenshotService *
++kiosk_shell_screenshot_service_new (KioskCompositor *compositor)
++{
++        GObject *object;
++
++        object = g_object_new (KIOSK_TYPE_SHELL_SCREENSHOT_SERVICE,
++                               "compositor", compositor,
++                               NULL);
++
++        return KIOSK_SHELL_SCREENSHOT_SERVICE (object);
++}
++
++static void
++on_user_bus_acquired (GDBusConnection             *connection,
++                      const char                  *unique_name,
++                      KioskShellScreenshotService *self)
++{
++        g_autoptr (GError) error = NULL;
++
++        g_debug ("KioskShellScreenshotService: Connected to user bus");
++
++        g_dbus_interface_skeleton_export (G_DBUS_INTERFACE_SKELETON (self),
++                                          connection,
++                                          KIOSK_SHELL_SCREENSHOT_SERVICE_OBJECT_PATH,
++                                          &error);
++
++        if (error != NULL) {
++                g_debug ("KioskShellScreenshotService: Could not export interface skeleton: %s",
++                         error->message);
++                g_clear_error (&error);
++        }
++}
++
++static void
++on_bus_name_acquired (GDBusConnection             *connection,
++                      const char                  *name,
++                      KioskShellScreenshotService *self)
++{
++        if (g_strcmp0 (name, KIOSK_SHELL_SCREENSHOT_SERVICE_BUS_NAME) != 0) {
++                return;
++        }
++
++        g_debug ("KioskShellScreenshotService: Acquired name %s", name);
++}
++
++static void
++on_bus_name_lost (GDBusConnection             *connection,
++                  const char                  *name,
++                  KioskShellScreenshotService *self)
++{
++        if (g_strcmp0 (name, KIOSK_SHELL_SCREENSHOT_SERVICE_BUS_NAME) != 0) {
++                return;
++        }
++
++        g_debug ("KioskShellScreenshotService: Lost name %s", name);
++}
++
++gboolean
++kiosk_shell_screenshot_service_start (KioskShellScreenshotService *self,
++                                      GError                     **error)
++{
++        g_return_val_if_fail (KIOSK_IS_SHELL_SCREENSHOT_SERVICE (self), FALSE);
++
++        g_debug ("KioskShellScreenshotService: Starting");
++        self->bus_id = g_bus_own_name (G_BUS_TYPE_SESSION,
++                                       KIOSK_SHELL_SCREENSHOT_SERVICE_BUS_NAME,
++                                       G_BUS_NAME_OWNER_FLAGS_REPLACE,
++                                       (GBusAcquiredCallback) on_user_bus_acquired,
++                                       (GBusNameAcquiredCallback) on_bus_name_acquired,
++                                       (GBusNameVanishedCallback) on_bus_name_lost,
++                                       self,
++                                       NULL);
++
++        return TRUE;
++}
++
++void
++kiosk_shell_screenshot_service_stop (KioskShellScreenshotService *self)
++{
++        g_return_if_fail (KIOSK_IS_SHELL_SCREENSHOT_SERVICE (self));
++
++        g_debug ("KioskShellScreenshotService: Stopping");
++
++        g_dbus_interface_skeleton_unexport (G_DBUS_INTERFACE_SKELETON (self));
++        g_clear_handle_id (&self->bus_id, g_bus_unown_name);
++}
+diff --git a/compositor/kiosk-shell-screenshot-service.h b/compositor/kiosk-shell-screenshot-service.h
+new file mode 100644
+index 0000000..520c319
+--- /dev/null
++++ b/compositor/kiosk-shell-screenshot-service.h
+@@ -0,0 +1,23 @@
++#pragma once
++
++#include <glib-object.h>
++
++#include "org.gnome.Shell.Screenshot.h"
++
++typedef struct _KioskCompositor KioskCompositor;
++
++G_BEGIN_DECLS
++
++#define KIOSK_TYPE_SHELL_SCREENSHOT_SERVICE (kiosk_shell_screenshot_service_get_type ())
++
++G_DECLARE_FINAL_TYPE (KioskShellScreenshotService,
++                      kiosk_shell_screenshot_service,
++                      KIOSK, SHELL_SCREENSHOT_SERVICE,
++                      KioskShellScreenshotDBusServiceSkeleton);
++
++KioskShellScreenshotService *kiosk_shell_screenshot_service_new (KioskCompositor *compositor);
++gboolean kiosk_shell_screenshot_service_start (KioskShellScreenshotService *service,
++                                               GError                     **error);
++void kiosk_shell_screenshot_service_stop (KioskShellScreenshotService *service);
++
++G_END_DECLS
+diff --git a/dbus-interfaces/org.gnome.Shell.Screenshot.xml b/dbus-interfaces/org.gnome.Shell.Screenshot.xml
+new file mode 100644
+index 0000000..8e16a30
+--- /dev/null
++++ b/dbus-interfaces/org.gnome.Shell.Screenshot.xml
+@@ -0,0 +1,161 @@
++<!DOCTYPE node PUBLIC
++'-//freedesktop//DTD D-BUS Object Introspection 1.0//EN'
++'http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd'>
++<node>
++
++  <!--
++      org.gnome.Shell.Screenshot:
++      @short_description: Screenshot interface
++
++      The interface used to capture pictures of the screen contents.
++  -->
++  <interface name="org.gnome.Shell.Screenshot">
++
++    <!--
++        InteractiveScreenshot:
++        @success: whether the screenshot was captured
++        @uri: the file where the screenshot was saved
++
++        Shows Shell's interactive screenshot dialog, and lets the
++        user take an interactive screenshot, which is then returned
++        in @filename as png image. It returns a boolean indicating
++        whether the operation was successful or not. The URI of the
++        screenshot will be returned in @uri.
++    -->
++    <method name="InteractiveScreenshot">
++      <arg type="b" direction="out" name="success"/>
++      <arg type="s" direction="out" name="uri"/>
++    </method>
++
++    <!--
++        Screenshot:
++        @filename: The filename for the screenshot
++        @include_cursor: Whether to include the cursor image or not
++        @flash: Whether to flash the screen or not
++        @success: whether the screenshot was captured
++        @filename_used: the file where the screenshot was saved
++
++        Takes a screenshot of the whole screen and saves it
++        in @filename as png image, it returns a boolean
++        indicating whether the operation was successful or not.
++        @filename can either be an absolute path or a basename, in
++        which case the screenshot will be saved in the $XDG_PICTURES_DIR
++        or the home directory if it doesn't exist. The filename used
++        to save the screenshot will be returned in @filename_used.
++    -->
++    <method name="Screenshot">
++      <arg type="b" direction="in" name="include_cursor"/>
++      <arg type="b" direction="in" name="flash"/>
++      <arg type="s" direction="in" name="filename"/>
++      <arg type="b" direction="out" name="success"/>
++      <arg type="s" direction="out" name="filename_used"/>
++    </method>
++
++    <!--
++        ScreenshotWindow:
++        @include_frame: Whether to include the frame or not
++        @include_cursor: Whether to include the cursor image or not
++        @flash: Whether to flash the window area or not
++        @filename: The filename for the screenshot
++        @success: whether the screenshot was captured
++        @filename_used: the file where the screenshot was saved
++
++        Takes a screenshot of the focused window (optionally omitting the frame)
++        and saves it in @filename as png image, it returns a boolean
++        indicating whether the operation was successful or not.
++        @filename can either be an absolute path or a basename, in
++        which case the screenshot will be saved in the $XDG_PICTURES_DIR
++        or the home directory if it doesn't exist. The filename used
++        to save the screenshot will be returned in @filename_used.
++    -->
++    <method name="ScreenshotWindow">
++      <arg type="b" direction="in" name="include_frame"/>
++      <arg type="b" direction="in" name="include_cursor"/>
++      <arg type="b" direction="in" name="flash"/>
++      <arg type="s" direction="in" name="filename"/>
++      <arg type="b" direction="out" name="success"/>
++      <arg type="s" direction="out" name="filename_used"/>
++    </method>
++
++    <!--
++        ScreenshotArea:
++        @x: the X coordinate of the area to capture
++        @y: the Y coordinate of the area to capture
++        @width: the width of the area to capture
++        @height: the height of the area to capture
++        @flash: whether to flash the area or not
++        @filename: the filename for the screenshot
++        @success: whether the screenshot was captured
++        @filename_used: the file where the screenshot was saved
++
++        Takes a screenshot of the passed in area and saves it
++        in @filename as png image, it returns a boolean
++        indicating whether the operation was successful or not.
++        @filename can either be an absolute path or a basename, in
++        which case the screenshot will be saved in the $XDG_PICTURES_DIR
++        or the home directory if it doesn't exist. The filename used
++        to save the screenshot will be returned in @filename_used.
++    -->
++    <method name="ScreenshotArea">
++      <arg type="i" direction="in" name="x"/>
++      <arg type="i" direction="in" name="y"/>
++      <arg type="i" direction="in" name="width"/>
++      <arg type="i" direction="in" name="height"/>
++      <arg type="b" direction="in" name="flash"/>
++      <arg type="s" direction="in" name="filename"/>
++      <arg type="b" direction="out" name="success"/>
++      <arg type="s" direction="out" name="filename_used"/>
++    </method>
++
++    <!--
++        PickColor:
++
++        Picks a color and returns the result.
++
++        The @result vardict contains:
++        <variablelist>
++          <varlistentry>
++            <term>color (ddd)</term>
++            <listitem><para>The color, RGB values in the range [0,1].</para></listitem>
++          </varlistentry>
++        </variablelist>
++    -->
++    <method name="PickColor">
++      <arg type="a{sv}" direction="out" name="result"/>
++    </method>
++
++    <!--
++        FlashArea:
++        @x: the X coordinate of the area to flash
++        @y: the Y coordinate of the area to flash
++        @width: the width of the area to flash
++        @height: the height of the area to flash
++
++        Renders a flash spot effect in the specified rectangle of the screen.
++    -->
++    <method name="FlashArea">
++      <arg type="i" direction="in" name="x"/>
++      <arg type="i" direction="in" name="y"/>
++      <arg type="i" direction="in" name="width"/>
++      <arg type="i" direction="in" name="height"/>
++    </method>
++
++    <!--
++        SelectArea:
++        @x: the X coordinate of the selected area
++        @y: the Y coordinate of the selected area
++        @width: the width of the selected area
++        @height: the height of the selected area
++
++        Interactively allows the user to select a rectangular area of
++        the screen, and returns its coordinates.
++    -->
++    <method name="SelectArea">
++      <arg type="i" direction="out" name="x"/>
++      <arg type="i" direction="out" name="y"/>
++      <arg type="i" direction="out" name="width"/>
++      <arg type="i" direction="out" name="height"/>
++    </method>
++
++  </interface>
++</node>
+diff --git a/meson.build b/meson.build
+index d1efcab..d5941bf 100644
+--- a/meson.build
++++ b/meson.build
+@@ -116,6 +116,17 @@ sources = gnome.gdbus_codegen(dbus_interface, dbus_interface_file,
+ )
+ dbus_interface_sources_map += { dbus_interface: sources }
+ 
++dbus_interface = 'org.gnome.Shell.Screenshot'
++dbus_interface_file = join_paths('dbus-interfaces', dbus_interface + '.xml')
++sources = gnome.gdbus_codegen(dbus_interface, dbus_interface_file,
++        namespace: 'Kiosk',
++        interface_prefix: 'org.gnome',
++        annotations: [
++                [ dbus_interface, 'org.gtk.GDBus.C.Name', 'ShellScreenshotDBusService' ]
++        ]
++)
++dbus_interface_sources_map += { dbus_interface: sources }
++
+ compositor_dependencies = []
+ compositor_dependencies += c_compiler.find_library('m')
+ compositor_dependencies += dependency('gio-2.0')
+@@ -154,6 +165,7 @@ compositor_sources += 'compositor/kiosk-input-source-group.c'
+ compositor_sources += 'compositor/kiosk-service.c'
+ compositor_sources += 'compositor/kiosk-shell-service.c'
+ compositor_sources += 'compositor/kiosk-shell-introspect-service.c'
++compositor_sources += 'compositor/kiosk-shell-screenshot-service.c'
+ compositor_sources += 'compositor/kiosk-screenshot.c'
+ 
+ if mutter_have_x11
+-- 
+2.48.1
+
