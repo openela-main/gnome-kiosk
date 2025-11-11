@@ -1,0 +1,78 @@
+From fed3a11e0f9c21f2361b3fea564c51957cd24fa5 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Tue, 12 Nov 2024 10:38:19 +0100
+Subject: [PATCH 4/5] compositor: Add an API to retrieve a boolean setting
+
+This adds a direct search API to the window configuration to retrieve
+the boolean value for a matching window.
+
+This is preparation work for the following commit.
+
+(cherry picked from commit 62a7053d14b8432ef8dbc3ad78cd043ea95cf043)
+---
+ compositor/kiosk-window-config.c | 32 ++++++++++++++++++++++++++++++++
+ compositor/kiosk-window-config.h |  5 +++++
+ 2 files changed, 37 insertions(+)
+
+diff --git a/compositor/kiosk-window-config.c b/compositor/kiosk-window-config.c
+index 5e6c830..a07798b 100644
+--- a/compositor/kiosk-window-config.c
++++ b/compositor/kiosk-window-config.c
+@@ -281,6 +281,38 @@ kiosk_window_config_match_window (KioskWindowConfig *kiosk_window_config,
+         return TRUE;
+ }
+ 
++gboolean
++kiosk_window_config_get_boolean_for_window (KioskWindowConfig *kiosk_window_config,
++                                            MetaWindow        *window,
++                                            const char        *key_name,
++                                            gboolean          *value)
++{
++        g_auto (GStrv) sections;
++        gsize length;
++        gboolean key_found = FALSE;
++        int i;
++
++        sections = g_key_file_get_groups (kiosk_window_config->config_key_file, &length);
++        for (i = 0; i < length; i++) {
++                if (!kiosk_window_config_match_window (kiosk_window_config,
++                                                       window,
++                                                       sections[i]))
++                        continue;
++
++                if (kiosk_window_config_check_for_boolean_value (kiosk_window_config,
++                                                                 sections[i],
++                                                                 key_name,
++                                                                 value)) {
++                        g_debug ("KioskWindowConfig: Using '%s=%s' from section [%s]",
++                                 key_name, *value ? "TRUE" : "FALSE", sections[i]);
++
++                        key_found = TRUE;
++                }
++        }
++
++        return key_found;
++}
++
+ void
+ kiosk_window_config_update_window (KioskWindowConfig *kiosk_window_config,
+                                    MetaWindow        *window,
+diff --git a/compositor/kiosk-window-config.h b/compositor/kiosk-window-config.h
+index 1c7e8ea..3482c43 100644
+--- a/compositor/kiosk-window-config.h
++++ b/compositor/kiosk-window-config.h
+@@ -14,6 +14,11 @@ G_DECLARE_FINAL_TYPE (KioskWindowConfig, kiosk_window_config,
+ 
+ KioskWindowConfig *kiosk_window_config_new (void);
+ 
++gboolean kiosk_window_config_get_boolean_for_window (KioskWindowConfig *kiosk_window_config,
++                                                     MetaWindow        *window,
++                                                     const char        *key_name,
++                                                     gboolean          *value);
++
+ void kiosk_window_config_update_window (KioskWindowConfig *kiosk_window_config,
+                                         MetaWindow        *window,
+                                         MetaWindowConfig  *window_config);
+-- 
+2.49.0
+

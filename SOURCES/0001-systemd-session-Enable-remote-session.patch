@@ -1,0 +1,34 @@
+From 9dd06017bf85eb779579342f7f5e7955017aa893 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Wed, 16 Jul 2025 11:51:49 +0200
+Subject: [PATCH] systemd/session: Enable remote session
+
+To be able to get something on screen when starting a session remotely,
+using remote login via gdm, the session has to pull in gsd-sharing, i.e.
+the session wants the SettingsDaemon Sharing target.
+---
+ kiosk-script/systemd/session.conf | 1 +
+ search-app/systemd/session.conf   | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/kiosk-script/systemd/session.conf b/kiosk-script/systemd/session.conf
+index a948efb..aeb722c 100644
+--- a/kiosk-script/systemd/session.conf
++++ b/kiosk-script/systemd/session.conf
+@@ -1,3 +1,4 @@
+ [Unit]
+ Requires=org.gnome.Kiosk.target
+ Requires=org.gnome.Kiosk.Script.service
++Wants=org.gnome.SettingsDaemon.Sharing.target
+diff --git a/search-app/systemd/session.conf b/search-app/systemd/session.conf
+index 1ab41da..d038670 100644
+--- a/search-app/systemd/session.conf
++++ b/search-app/systemd/session.conf
+@@ -1,3 +1,4 @@
+ [Unit]
+ Requires=org.gnome.Kiosk.target
+ Requires=org.gnome.Kiosk.SearchApp.service
++Wants=org.gnome.SettingsDaemon.Sharing.target
+-- 
+2.50.1
+

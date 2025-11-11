@@ -1,0 +1,49 @@
+From 231001c019b379f573baa0e869811fa8c429775b Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Wed, 13 Nov 2024 11:36:25 +0100
+Subject: [PATCH 1/5] compositor: Use the meta window API for set-above
+
+Currently, GNOME Kiosk would place windows that need to be above in a
+special window group on top.
+
+Unfortunately, that means windows in that group will remain there, and
+there is no way to send these back to the notmal layer using the
+existing mutter API.
+
+To avoid the problem, use the meta_window_make_above() API.
+
+See-also: https://gitlab.gnome.org/GNOME/gnome-kiosk/-/issues/26
+(cherry picked from commit 1c2994e5eada4286655d007f91c22452c27f8ead)
+---
+ compositor/kiosk-compositor.c | 14 +++-----------
+ 1 file changed, 3 insertions(+), 11 deletions(-)
+
+diff --git a/compositor/kiosk-compositor.c b/compositor/kiosk-compositor.c
+index 8432a24..37588da 100644
+--- a/compositor/kiosk-compositor.c
++++ b/compositor/kiosk-compositor.c
+@@ -377,18 +377,10 @@ kiosk_compositor_map (MetaPlugin      *plugin,
+                 meta_window_make_fullscreen (window);
+                 easing_duration = 3000;
+         } else {
+-                ClutterActor *window_group;
+-
+                 g_debug ("KioskCompositor: Mapping window that does not need to be fullscreened");
+-                window_group = meta_get_top_window_group_for_display (self->display);
+-
+-                if (kiosk_compositor_wants_window_above (self, window)) {
+-                        g_object_ref (G_OBJECT (actor));
+-                        clutter_actor_remove_child (clutter_actor_get_parent (CLUTTER_ACTOR (actor)), CLUTTER_ACTOR (actor));
+-                        clutter_actor_add_child (window_group, CLUTTER_ACTOR (actor));
+-                        clutter_actor_set_child_above_sibling (window_group, CLUTTER_ACTOR (actor), NULL);
+-                        g_object_unref (G_OBJECT (actor));
+-                }
++
++                if (kiosk_compositor_wants_window_above (self, window))
++                        meta_window_make_above (window);
+ 
+                 easing_duration = 500;
+         }
+-- 
+2.49.0
+
