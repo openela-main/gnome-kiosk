@@ -1,4 +1,4 @@
-From bad81e556eca3acad1b97f6dbc00f3788e24d25f Mon Sep 17 00:00:00 2001
+From c8c4aac6d68bc864fa197d0bef0a747c70dd67f3 Mon Sep 17 00:00:00 2001
 From: Olivier Fourdan <ofourdan@redhat.com>
 Date: Thu, 12 Dec 2024 14:05:04 +0100
 Subject: [PATCH] search-app: Use firefox from flatpak
@@ -37,5 +37,5 @@ index 29ddcd8..d4f5d0f 100644
 +ExecStart=@bindir@/flatpak run --command=firefox --file-forwarding org.mozilla.firefox --kiosk --private-window --new-instance https://www.google.com
  Restart=always
 -- 
-2.48.1
+2.51.1
 
