@@ -12,7 +12,7 @@
 
 Name:           gnome-kiosk
 Version:        40.0
-Release:        7%{?dist}
+Release:        8%{?dist}
 Summary:        Window management and application launching for GNOME
 
 License:        GPLv2+
@@ -38,6 +38,8 @@ BuildRequires:  meson
 
 Requires:       gnome-settings-daemon%{?_isa} >= %{gnome_settings_daemon_version}
 Requires:       gsettings-desktop-schemas%{?_isa} >= %{gsettings_desktop_schemas_version}
+Recommends:     xorg-x11-server-Xwayland
+Recommends:     dbus-daemon
 
 Patch10001:     0001-compositor-Support-systemd-user-sessions.patch
 Patch10002:     0002-Add-a-script-for-simplifying-kiosk-setup.patch
@@ -53,7 +55,7 @@ Patch30001:     0001-compositor-Be-more-permissive-about-what-s-considere.patch
 # https://issues.redhat.com/browse/RHEL-25536
 Patch40001:     0001-input-selector-Add-missing-dependency-on-gio-unix-2..patch
 Patch40002:     0001-kiosk-script-Copy-and-run-the-script-from-XDG_RUNTIM.patch
-# https://issues.redhat.com/browse/RHEL-84030
+# https://issues.redhat.com/browse/RHEL-84004
 Patch50001:     0001-search-app-Add-systemd-session-files.patch
 Patch50002:     0002-search-app-Update-desktop-file-definition.patch
 
@@ -124,9 +126,13 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/org.gnome.Kiosk.Searc
 %{_datadir}/wayland-sessions/org.gnome.Kiosk.SearchApp.Session.desktop
 
 %changelog
+* Tue Oct  7 2025 Olivier Fourdan <ofourdan@redhat.com> - 40.0-8
+- Add Xwayland and dbus-daemon as weak dependencies
+  Resolves: https://issues.redhat.com/browse/RHEL-66572
+
 * Tue Mar 18 2025 Olivier Fourdan <ofourdan@redhat.com> - 40.0-7
 - search-app: Add systemd session files
-  Resolves: https://issues.redhat.com/browse/RHEL-84030
+  Resolves: https://issues.redhat.com/browse/RHEL-84004
 
 * Wed Dec 18 2024 Ray Strode <rstrode@redhat.com> - 40.0-6
 - Copy and run the script from XDG_RUNTIME_DIR
